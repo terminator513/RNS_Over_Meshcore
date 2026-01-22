@@ -13,6 +13,7 @@
 # port = / dev / ttyUSB0
 # speed = 115200
 
+from RNS.Interfaces.Interface import Interface
 import struct
 import threading
 import time
