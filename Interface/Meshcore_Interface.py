@@ -141,7 +141,7 @@ class MeshCoreInterface(Interface):
 
     async def _send(self, data):
         try:
-            await self.mesh.commands.send_data(None, data)
+            await self.mesh.commands.send(data)
         except Exception as e:
             self.online = False
             RNS.log(f"[{self.name}] TX failed: {e}", RNS.LOG_ERROR)
