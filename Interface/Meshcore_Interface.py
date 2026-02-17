@@ -1,6 +1,6 @@
-# MIT License - Copyright (c) 2024 Mark Qvist / unsigned.io
-# This interface integrates meshcore_py with Reticulum and follows
-# the same custom interface structure as the ExampleInterface.
+# MIT License - Copyright (c) 2024 Andrey / terminator513
+# MeshCore Interface for Reticulum Network Stack
+# Based on ExampleInterface by Mark Qvist / unsigned.io
 
 import asyncio
 import importlib.util
@@ -12,70 +12,85 @@ from RNS.Interfaces.Interface import Interface
 
 
 class MeshCoreInterface(Interface):
+    """
+    Reticulum Interface for meshcore_py.
+    Supports Serial, TCP and BLE transports.
+    """
     DEFAULT_IFAC_SIZE = 8
 
-    owner = None
-    mesh = None
-    loop = None
-    thread = None
-
     def __init__(self, owner, configuration):
+        # Check dependency
         if importlib.util.find_spec("meshcore") is None:
-            RNS.log("Using this interface requires a meshcore module to be installed.", RNS.LOG_CRITICAL)
-            RNS.log("You can install one with the command: python3 -m pip install meshcore", RNS.LOG_CRITICAL)
+            RNS.log("The MeshCore interface requires the 'meshcore' module to be installed.", RNS.LOG_CRITICAL)
+            RNS.log("Install it with: pip install meshcore", RNS.LOG_CRITICAL)
             RNS.panic()
 
         from meshcore import EventType, MeshCore
 
         super().__init__()
 
+        # Parse config
         ifconf = Interface.get_config_obj(configuration)
-
-        self.name = ifconf["name"]
-
+        self.name = ifconf.get("name", "MeshCore")
         self.owner = owner
+        
+        # Transport parameters
         self.transport = ifconf.get("transport", "ble").lower()
         self.port = ifconf.get("port", "/dev/ttyUSB0")
         self.baud = int(ifconf.get("baudrate", 115200))
         self.host = ifconf.get("host", "127.0.0.1")
         self.tcp_port = int(ifconf.get("tcp_port", 4403))
         self.ble_name = ifconf.get("ble_name", None)
-
+        
+        # Interface parameters - OVERWRITE defaults from parent class
         self.HW_MTU = int(ifconf.get("mtu", 256))
         self.bitrate = int(ifconf.get("bitrate", 2000))
-
+        
+        # State
         self.online = False
         self.detached = False
         self._last_tx = 0
+        self._lock = threading.Lock()
+        
+        # MeshCore references
+        self._meshcore_cls = MeshCore
+        self._event_type_cls = EventType
+        self.mesh = None
+        self.loop = None
+        self.thread = None
 
-        self._meshcore = MeshCore
-        self._event_type = EventType
-
-        self.thread = threading.Thread(target=self._async_thread)
-        self.thread.daemon = True
+        # Start asyncio thread
+        self.thread = threading.Thread(target=self._async_thread, daemon=True)
         self.thread.start()
 
     def _async_thread(self):
+        """Starts event loop in separate thread"""
         self.loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self.loop)
         self.loop.create_task(self._connect_loop())
-        self.loop.run_forever()
+        try:
+            self.loop.run_forever()
+        finally:
+            self.loop.close()
 
     async def _connect_loop(self):
+        """Reconnection loop on connection loss"""
         while not self.detached:
             try:
                 await self._connect_once()
                 return
             except Exception as e:
-                self.online = False
+                with self._lock:
+                    self.online = False
                 RNS.log(f"[{self.name}] MeshCore connect failed: {e}", RNS.LOG_ERROR)
                 await asyncio.sleep(3)
 
     async def _connect_once(self):
+        """Single connection point to meshcore"""
         if self.transport == "serial":
-            self.mesh = await self._meshcore.create_serial(self.port, self.baud)
+            self.mesh = await self._meshcore_cls.create_serial(self.port, self.baud)
         elif self.transport == "tcp":
-            self.mesh = await self._meshcore.create_tcp(self.host, self.tcp_port)
+            self.mesh = await self._meshcore_cls.create_tcp(self.host, self.tcp_port)
         elif self.transport == "ble":
             self.mesh = await self._open_ble_mesh()
         else:
@@ -84,47 +99,92 @@ class MeshCoreInterface(Interface):
         if self.mesh is None:
             raise IOError("MeshCore returned no connection object")
 
-        self.mesh.subscribe(self._event_type.RAW_DATA, self._rx)
-        self.mesh.subscribe(self._event_type.ERROR, self._err)
-        self.mesh.subscribe(self._event_type.DISCONNECTED, self._err)
+        # KEY CHANGE: Use RX_LOG_DATA instead of RAW_DATA
+        self.mesh.subscribe(self._event_type_cls.RX_LOG_DATA, self._rx)
+        self.mesh.subscribe(self._event_type_cls.ERROR, self._err)
+        self.mesh.subscribe(self._event_type_cls.DISCONNECTED, self._err)
 
-        self.online = True
+        with self._lock:
+            self.online = True
+        
         RNS.log(f"[{self.name}] MeshCore connected over {self.transport}", RNS.LOG_INFO)
+        
+        if hasattr(self.owner, 'announce_connected'):
+            self.owner.announce_connected(self)
 
     async def _open_ble_mesh(self):
+        """BLE-specific connection logic with name search"""
         if self.ble_name:
-            from bleak import BleakScanner
+            try:
+                from bleak import BleakScanner
+            except ImportError:
+                raise ImportError("BLE transport requires 'bleak' package: pip install bleak")
 
-            RNS.log(f"[{self.name}] Scanning for BLE device named '{self.ble_name}'...", RNS.LOG_INFO)
+            RNS.log(f"[{self.name}] Scanning for BLE device '{self.ble_name}'...", RNS.LOG_INFO)
             devices = await BleakScanner.discover(timeout=5.0)
+            
             for device in devices:
                 if device.name == self.ble_name:
                     RNS.log(f"[{self.name}] Found {self.ble_name} @ {device.address}", RNS.LOG_INFO)
-                    return await self._meshcore.create_ble(address=device.address)
-
+                    return await self._meshcore_cls.create_ble(address=device.address)
+            
             raise IOError(f"BLE device '{self.ble_name}' not found")
-
-        return await self._meshcore.create_ble()
+        
+        return await self._meshcore_cls.create_ble()
 
     async def _rx(self, event):
+        """Callback for receiving data from meshcore."""
         try:
-            payload = event.payload.get("data") if event and event.payload else None
-            if payload:
-                self.rxb += len(payload)
+            payload = None
+            
+            if event and hasattr(event, "payload") and event.payload:
+                evt_payload = event.payload
+                
+                if isinstance(evt_payload, dict):
+                    raw = evt_payload.get("payload")
+                    
+                    if isinstance(raw, str):
+                        payload = bytes.fromhex(raw.replace(" ", ""))
+                    elif isinstance(raw, (bytes, bytearray)):
+                        payload = bytes(raw)
+                    
+                elif isinstance(evt_payload, (bytes, bytearray)):
+                    payload = bytes(evt_payload)
+            
+            if payload and len(payload) > 0:
+                with self._lock:
+                    self.rxb += len(payload)
                 self.owner.inbound(payload, self)
+            else:
+                RNS.log(f"[{self.name}] RX: empty or unparsable payload", RNS.LOG_DEBUG)
+                
         except Exception as e:
             RNS.log(f"[{self.name}] RX error: {e}", RNS.LOG_ERROR)
 
     async def _err(self, event):
-        self.online = False
-        event_payload = event.payload if event and hasattr(event, "payload") else "unknown"
+        """Handle error and disconnect events"""
+        with self._lock:
+            self.online = False
+            
+        event_payload = "unknown"
+        if event and hasattr(event, "payload"):
+            event_payload = event.payload
+        elif event:
+            event_payload = str(event)
+            
         RNS.log(f"[{self.name}] MeshCore event error/disconnect: {event_payload}", RNS.LOG_ERROR)
-        if not self.detached:
+        
+        if hasattr(self.owner, 'announce_disconnected') and not self.detached:
+            self.owner.announce_disconnected(self)
+        
+        if not self.detached and self.loop and self.loop.is_running():
             self.loop.create_task(self._connect_loop())
 
     def process_outgoing(self, data):
-        if not self.online or self.mesh is None or self.loop is None:
-            return
+        """Called by Reticulum when packet needs to be sent."""
+        with self._lock:
+            if not self.online or self.mesh is None or self.loop is None:
+                return
 
         if len(data) > self.HW_MTU:
             RNS.log(f"[{self.name}] Packet too large ({len(data)} > {self.HW_MTU})", RNS.LOG_WARNING)
@@ -134,31 +194,72 @@ class MeshCoreInterface(Interface):
         min_interval = len(data) / self.bitrate if self.bitrate > 0 else 0
         if now - self._last_tx < min_interval:
             return
-
         self._last_tx = now
-        self.txb += len(data)
-        asyncio.run_coroutine_threadsafe(self._send(data), self.loop)
+
+        with self._lock:
+            self.txb += len(data)
+
+        future = asyncio.run_coroutine_threadsafe(self._send(data), self.loop)
+        
+        def _tx_callback(fut):
+            try:
+                fut.result()
+            except Exception as e:
+                RNS.log(f"[{self.name}] TX async error: {e}", RNS.LOG_ERROR)
+                with self._lock:
+                    self.online = False
+        
+        future.add_done_callback(_tx_callback)
 
     async def _send(self, data):
+        """Async data send via meshcore"""
         try:
             await self.mesh.commands.send(data)
         except Exception as e:
-            self.online = False
             RNS.log(f"[{self.name}] TX failed: {e}", RNS.LOG_ERROR)
+            raise
 
     def should_ingress_limit(self):
+        """Disable ingress limiting for mesh networks"""
         return False
 
+    def get_status_string(self):
+        """Returns human-readable interface status"""
+        status = "Online" if self.online else "Offline"
+        if self.transport == "serial":
+            location = f"{self.port}@{self.baud}"
+        elif self.transport == "tcp":
+            location = f"{self.host}:{self.tcp_port}"
+        elif self.transport == "ble":
+            location = self.ble_name or "BLE:auto"
+        else:
+            location = "unknown"
+        return f"{self.name}: {status}, {self.transport}://{location}, MTU={self.HW_MTU}"
+
     def detach(self):
+        """Proper interface detachment"""
         self.detached = True
-        self.online = False
-
-        if self.mesh and self.loop:
-            asyncio.run_coroutine_threadsafe(self.mesh.close(), self.loop)
-
-        if self.loop:
-            self.loop.call_soon_threadsafe(self.loop.stop)
-
+        
+        with self._lock:
+            self.online = False
+        
+        if hasattr(self.owner, 'announce_disconnected'):
+            self.owner.announce_disconnected(self)
+        
+        if self.loop and self.loop.is_running():
+            if self.mesh:
+                try:
+                    asyncio.run_coroutine_threadsafe(self.mesh.close(), self.loop)
+                except:
+                    pass
+            try:
+                self.loop.call_soon_threadsafe(self.loop.stop)
+            except:
+                pass
+        
+        if self.thread and self.thread.is_alive():
+            self.thread.join(timeout=2.0)
+        
         RNS.log(f"[{self.name}] Detached", RNS.LOG_INFO)
 
     def __str__(self):
