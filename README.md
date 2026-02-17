@@ -40,28 +40,27 @@ Interface for Reticulum Network Stack (RNS) using MeshCore as the underlying net
 Add the following to your `~/.reticulum/config` file:
 
 ```ini
-[interfaces]
-  [[MeshCore]]
-    type = Meshcore_Interface
-    interface_enabled = true
+[[MeshCore]]
+   type = Meshcore_Interface
+   interface_enabled = true
     
-    # Transport type: serial | tcp | ble
-    transport = ble
+   # Transport type: serial | tcp | ble
+   transport = ble
     
-    # === Serial Settings (if transport = serial) ===
-    # port = /dev/ttyUSB0
-    # baudrate = 115200
+   # === Serial Settings (if transport = serial) ===
+   # port = /dev/ttyUSB0
+   # baudrate = 115200
     
-    # === TCP Settings (if transport = tcp) ===
-    # host = 127.0.0.1
-    # tcp_port = 4403
+   # === TCP Settings (if transport = tcp) ===
+   # host = 127.0.0.1
+   # tcp_port = 4403
     
-    # === BLE Settings (if transport = ble) ===
-    ble_name = MeshCore-Obdolbus
+   # === BLE Settings (if transport = ble) ===
+   ble_name = MeshCore-Obdolbus
     
-    # === Interface Settings ===
-    mtu = 256
-    # bitrate = 2000
+   # === Interface Settings ===
+   mtu = 256
+   # bitrate = 2000
 ```
 
 ### Configuration Options
