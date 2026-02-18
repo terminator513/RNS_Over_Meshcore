@@ -186,6 +186,7 @@ class MeshCoreInterface(Interface):
 
     async def _send(self, data):
         try:
+            RNS.log(f"[{self.name}] TX: calling mesh.commands.send({len(data)} bytes)", RNS.LOG_DEBUG)
             await self.mesh.commands.send(data)
         except Exception as e:
             RNS.log(f"[{self.name}] TX failed: {e}", RNS.LOG_ERROR)
