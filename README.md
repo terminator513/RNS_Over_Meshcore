@@ -59,7 +59,6 @@ Add the following to your `~/.reticulum/config` file:
    ble_name = MeshCore-Obdolbus
     
    # === Interface Settings ===
-   # mtu = 184 # MAX_PACKET_PAYLOAD: https://github.com/meshcore-dev/MeshCore/blob/295f67d4fa4142b0701c9c7554f80a79b581e9a5/src/MeshCore.h#L19
    # bitrate = 2000
 ```
 

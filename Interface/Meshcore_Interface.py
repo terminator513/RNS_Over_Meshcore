@@ -1,9 +1,12 @@
 # MeshCore Interface for Reticulum Network Stack
+# Implements internal fragmentation to respect MeshCore MAX_PACKET_PAYLOAD=184
 
 import asyncio
 import importlib.util
 import threading
 import time
+import hashlib
+from collections import defaultdict
 
 import RNS
 from RNS.Interfaces.Interface import Interface
@@ -12,6 +15,11 @@ from RNS.Interfaces.Interface import Interface
 class MeshCoreInterface(Interface):
     DEFAULT_IFAC_SIZE = 8
 
+    # Fragmentation: to fit within MAX_PACKET_PAYLOAD=184,
+    # reserve 4 bytes for fragment header -> payload 180 bytes
+    FRAGMENT_MTU = 179  # 184 - 5 байт заголовка = 179
+    FRAGMENT_HEADER_SIZE = 4
+
     def __init__(self, owner, configuration):
         if importlib.util.find_spec("meshcore") is None:
             RNS.log("The MeshCore interface requires the 'meshcore' module to be installed.", RNS.LOG_CRITICAL)
@@ -19,9 +27,10 @@ class MeshCoreInterface(Interface):
             RNS.panic()
 
         from meshcore import EventType, MeshCore
-
+        
+        
         super().__init__()
-
+        self.HW_MTU = 564
         ifconf = Interface.get_config_obj(configuration)
         self.name = ifconf.get("name", "MeshCore")
         self.owner = owner
@@ -33,13 +42,16 @@ class MeshCoreInterface(Interface):
         self.tcp_port = int(ifconf.get("tcp_port", 4403))
         self.ble_name = ifconf.get("ble_name", None)
         
-        self.HW_MTU = int(ifconf.get("mtu", 184)) # MAX_PACKET_PAYLOAD: https://github.com/meshcore-dev/MeshCore/blob/295f67d4fa4142b0701c9c7554f80a79b581e9a5/src/MeshCore.h#L19
         self.bitrate = int(ifconf.get("bitrate", 2000))
         
         self.online = False
         self.detached = False
         self._last_tx = 0
         self._lock = threading.Lock()
+        
+        # Buffers for reassembling incoming fragments
+        self._fragment_buffers = defaultdict(dict)
+        self._fragment_meta = {}
         
         self._meshcore_cls = MeshCore
         self._event_type_cls = EventType
@@ -111,6 +123,71 @@ class MeshCoreInterface(Interface):
         
         return await self._meshcore_cls.create_ble()
 
+    def _fragment_outgoing(self, data: bytes):
+        # If packet is small, send as-is with flag 0x00
+        if len(data) <= self.FRAGMENT_MTU:
+            return [b'\x00' + data]
+        
+        # Fragment format: [0x01][frag_id:2][chunk_idx:1][total:1][payload:<=180]
+        fragments = []
+        frag_id = hashlib.md5(data).digest()[:2]
+        total_chunks = (len(data) + self.FRAGMENT_MTU - 1) // self.FRAGMENT_MTU
+        
+        for idx in range(total_chunks):
+            start = idx * self.FRAGMENT_MTU
+            end = min(start + self.FRAGMENT_MTU, len(data))
+            chunk = data[start:end]
+            
+            header = b'\x01' + frag_id + bytes([idx, total_chunks])
+            fragments.append(header + chunk)
+        
+        return fragments
+
+    def _reassemble_incoming(self, payload: bytes):
+        if len(payload) < 1:
+            return None
+        
+        flags = payload[0]
+        
+        # Flag 0x00: not fragmented, return data directly
+        if flags == 0x00:
+            return payload[1:]
+        
+        # Flag 0x01: fragmented packet
+        elif flags == 0x01:
+            if len(payload) < 5:
+                RNS.log(f"[{self.name}] RX: fragment header too short", RNS.LOG_DEBUG)
+                return None
+            
+            frag_id = payload[1:3].hex()
+            chunk_idx = payload[3]
+            total_chunks = payload[4]
+            chunk_data = payload[5:]
+            
+            key = frag_id
+            
+            if key not in self._fragment_meta:
+                self._fragment_meta[key] = {"total": total_chunks, "received": set()}
+                self._fragment_buffers[key] = {}
+            
+            meta = self._fragment_meta[key]
+            buf = self._fragment_buffers[key]
+            
+            buf[chunk_idx] = chunk_data
+            meta["received"].add(chunk_idx)
+            
+            if len(meta["received"]) == meta["total"]:
+                assembled = b''.join(buf[i] for i in range(meta["total"]))
+                del self._fragment_buffers[key]
+                del self._fragment_meta[key]
+                return assembled
+            
+            return None
+        
+        else:
+            RNS.log(f"[{self.name}] RX: unknown fragment flag 0x{flags:02X}", RNS.LOG_DEBUG)
+            return None
+
     async def _rx(self, event):
         try:
             payload = None
@@ -130,9 +207,14 @@ class MeshCoreInterface(Interface):
                     payload = bytes(evt_payload)
             
             if payload and len(payload) > 0:
+                assembled = self._reassemble_incoming(payload)
+                
+                if assembled is None:
+                    return
+                
                 with self._lock:
-                    self.rxb += len(payload)
-                self.owner.inbound(payload, self)
+                    self.rxb += len(assembled)
+                self.owner.inbound(assembled, self)
             else:
                 RNS.log(f"[{self.name}] RX: empty or unparsable payload", RNS.LOG_DEBUG)
                 
@@ -159,30 +241,33 @@ class MeshCoreInterface(Interface):
             if not self.online or self.mesh is None or self.loop is None:
                 return
 
-        if len(data) > self.HW_MTU:
-            RNS.log(f"[{self.name}] Packet too large ({len(data)} > {self.HW_MTU})", RNS.LOG_WARNING)
-            return
-
+        fragments = self._fragment_outgoing(data)
+        
         now = time.time()
-        min_interval = len(data) / self.bitrate if self.bitrate > 0 else 0
-        if now - self._last_tx < min_interval:
-            return
-        self._last_tx = now
-
-        with self._lock:
-            self.txb += len(data)
-
-        future = asyncio.run_coroutine_threadsafe(self._send(data), self.loop)
         
-        def _tx_callback(fut):
-            try:
-                fut.result()
-            except Exception as e:
-                RNS.log(f"[{self.name}] TX async error: {e}", RNS.LOG_ERROR)
-                with self._lock:
-                    self.online = False
-        
-        future.add_done_callback(_tx_callback)
+        for fragment in fragments:
+            if self.bitrate > 0:
+                min_interval = len(fragment) / self.bitrate
+                elapsed = now - self._last_tx
+                if elapsed < min_interval:
+                    time.sleep(min_interval - elapsed)
+                    now = time.time()
+            self._last_tx = now
+
+            with self._lock:
+                self.txb += len(fragment)
+
+            future = asyncio.run_coroutine_threadsafe(self._send(fragment), self.loop)
+            
+            def _tx_callback(fut):
+                try:
+                    fut.result()
+                except Exception as e:
+                    RNS.log(f"[{self.name}] TX async error: {e}", RNS.LOG_ERROR)
+                    with self._lock:
+                        self.online = False
+            
+            future.add_done_callback(_tx_callback)
 
     async def _send(self, data):
         try:
@@ -205,7 +290,7 @@ class MeshCoreInterface(Interface):
             location = self.ble_name or "BLE:auto"
         else:
             location = "unknown"
-        return f"{self.name}: {status}, {self.transport}://{location}, MTU={self.HW_MTU}"
+        return f"{self.name}: {status}, {self.transport}://{location}, MTU={self.HW_MTU} (frag={self.FRAGMENT_MTU})"
 
     def detach(self):
         self.detached = True
