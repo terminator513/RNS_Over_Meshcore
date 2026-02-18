@@ -114,7 +114,8 @@ class MeshCoreInterface(Interface):
 
             RNS.log(f"[{self.name}] Scanning for BLE device '{self.ble_name}'...", RNS.LOG_INFO)
             devices = await BleakScanner.discover(timeout=5.0)
-            
+            RNS.log(f"[{self.name}] Detected devices: {devices}", RNS.LOG_DEBUG)
+
             for device in devices:
                 if device.name == self.ble_name:
                     RNS.log(f"[{self.name}] Found {self.ble_name} @ {device.address}", RNS.LOG_INFO)
@@ -186,7 +187,7 @@ class MeshCoreInterface(Interface):
             return None
         
         else:
-            RNS.log(f"[{self.name}] RX: unknown fragment flag 0x{flags:02X}", RNS.LOG_DEBUG)
+            RNS.log(f"[{self.name}] RX: unknown fragment flag 0x{flags:02X}", RNS.LOG_EXTREME)
             return None
 
     async def _rx(self, event):
@@ -208,6 +209,14 @@ class MeshCoreInterface(Interface):
                     payload = bytes(evt_payload)
             
             if payload and len(payload) > 0:
+                RNS.log(f"[{self.name}] RX: raw payload len={len(payload)}, first 16 bytes = {payload[:16].hex()}", RNS.LOG_EXTREME)
+                # Попробуем интерпретировать как meshcore-пакет
+                if len(payload) >= 1:
+                    header = payload[0]
+                    route_type = header & 0x03
+                    payload_type = (header >> 2) & 0x0F
+                    version = (header >> 6) & 0x03
+                    RNS.log(f"[{self.name}] RX: meshcore header? V={version}, P={payload_type}, R={route_type}", RNS.LOG_EXTREME)
                 assembled = self._reassemble_incoming(payload)
                 
                 if assembled is None:
