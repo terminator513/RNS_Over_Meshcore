@@ -27,7 +27,7 @@ RNS_CHANNEL_FALLBACK = 39  # Last valid channel if none free
 # =============================================================================
 FLAG_UNFRAGMENTED = 0xFE
 FLAG_FRAGMENTED = 0xFF
-FRAGMENT_MTU = 179
+FRAGMENT_MTU = 160
 FRAGMENT_HEADER_SIZE = 5
 
 
