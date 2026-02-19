@@ -9,6 +9,7 @@ import hashlib
 import traceback
 from collections import defaultdict
 from typing import Optional
+import base64
 
 import RNS
 from RNS.Interfaces.Interface import Interface
@@ -28,7 +29,7 @@ RNS_CHANNEL_FALLBACK = 39  # Last valid channel if none free
 # =============================================================================
 FLAG_UNFRAGMENTED = 0xFE
 FLAG_FRAGMENTED = 0xFF
-FRAGMENT_MTU = 160
+FRAGMENT_MTU = 120
 FRAGMENT_HEADER_SIZE = 5
 
 class MeshCoreInterface(Interface):
@@ -362,7 +363,11 @@ class MeshCoreInterface(Interface):
                 return
             msg_str = self._remove_node_name_from_msg(msg_str)
             #print(f"DEBUG {msg_str}")
-            data = msg_str.encode('latin-1')
+            try:
+                data = base64.b64decode(msg_str)
+            except Exception:
+                RNS.log(f"[{self.name}] RX invalid base64 payload", RNS.LOG_WARNING)
+                return
             
             if len(data) < 1:
                 return
@@ -484,7 +489,7 @@ class MeshCoreInterface(Interface):
     async def _send(self, data):
         """Send RNS packet as channel message"""
         try:
-            msg_str = data.decode('latin-1')
+            msg_str = base64.b64encode(data).decode("ascii")
             result = await self.mesh.commands.send_chan_msg(self.channel_idx, msg_str)
             #result = await self._send_channel_raw(self.channel_idx, msg_str)
             #result = await self._send_raw(data)
