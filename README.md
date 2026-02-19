@@ -86,6 +86,8 @@ Add the following to your `~/.reticulum/config` file:
 | `meshcore module not found` | Run `pip install meshcore` |
 
 ---
+*Thanks to [HDDen](https://github.com/HDDen/) for contributions and support.*
+---
 
 ## License
 
