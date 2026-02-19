@@ -10,7 +10,7 @@ Interface for Reticulum Network Stack (RNS) using MeshCore as the underlying net
 
 ## Requirements
 
-- Python 3.8+
+- Python 3.10+
 - [meshcore](https://pypi.org/project/meshcore/) Python library
 - Reticulum Network Stack (`rnsd`)
 - Compatible LoRa device with MeshCore firmware
