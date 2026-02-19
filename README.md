@@ -85,9 +85,9 @@ Add the following to your `~/.reticulum/config` file:
 | Interface not connecting | Check `ble_name` matches your device, or verify serial port |
 | `meshcore module not found` | Run `pip install meshcore` |
 
----
-*Thanks to [HDDen](https://github.com/HDDen/) for contributions and support.*
----
+## Acknowledgements
+
+Special thanks to [HDDen](https://github.com/HDDen/) for their help with the MeshCore integration and debugging.
 
 ## License
 
