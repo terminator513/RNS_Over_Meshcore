@@ -409,7 +409,7 @@ class MeshCoreInterface(Interface):
             result = await self.mesh.commands.send_chan_msg(self.channel_idx, msg_str)
             
             if result.type == self._event_type_cls.ERROR:
-                RNS.log(f"[{self.name}] TX channel error: {result.payload}", RNS.LOG_DEBUG)
+                RNS.log(f"[{self.name}] TX channel error: {result.payload}", RNS.LOG_ERROR)
             #RNS.log(f"[{self.name}] TX result.type: {result.type}", RNS.LOG_DEBUG)
                 
         except Exception as e:
