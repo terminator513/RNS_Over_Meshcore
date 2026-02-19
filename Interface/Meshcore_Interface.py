@@ -17,8 +17,9 @@ from RNS.Interfaces.Interface import Interface
 # PRE-AGREED CHANNEL PARAMETERS (must match on all RNS nodes!)
 # =============================================================================
 RNS_CHANNEL_NAME = "RNSTunnel"
-RNS_CHANNEL_SECRET = bytes.fromhex("0123456789abcdef0123456789abcdef")  # 16 bytes
-RNS_CHANNEL_FALLBACK = 15  # Last valid channel if none free
+RNS_CHANNEL_SECRET = bytes.fromhex("c4d2b6c8254e3b11200f57e95dcb1197")  #DON'T USE THIS PUBLIC KEY, YOU WILL RUIN OTHER PEOPLE'S LIVES = 8b3387e9c5cdea6ac9e5edbaa115cd72
+RNS_CHANNEL_MAX = 39  # Firmware supports channels 0-39
+RNS_CHANNEL_FALLBACK = 39  # Last valid channel if none free
 
 
 # =============================================================================
@@ -26,7 +27,7 @@ RNS_CHANNEL_FALLBACK = 15  # Last valid channel if none free
 # =============================================================================
 FLAG_UNFRAGMENTED = 0xFE
 FLAG_FRAGMENTED = 0xFF
-FRAGMENT_MTU = 175  # Conservative for channel messages
+FRAGMENT_MTU = 179
 FRAGMENT_HEADER_SIZE = 5
 
 
@@ -110,15 +111,14 @@ class MeshCoreInterface(Interface):
 
     async def _find_free_channel(self):
         """
-        Search for a free channel (0-15).
-        Returns channel index if found, or None if all are occupied.
-        A channel is "free" if it doesn't exist or has different config we can overwrite.
+        Search for a free channel (0-39).
+        A channel is "free" if it has empty name and zero secret.
         """
         # If config specifies exact channel, try only that one
         if self.channel_idx is not None:
             idx = self.channel_idx
-            if not 0 <= idx <= 15:
-                RNS.log(f"[{self.name}] Configured channel {idx} out of range (0-15)", RNS.LOG_ERROR)
+            if not 0 <= idx <= RNS_CHANNEL_MAX:
+                RNS.log(f"[{self.name}] Configured channel {idx} out of range (0-{RNS_CHANNEL_MAX})", RNS.LOG_ERROR)
                 return None
             
             result = await self.mesh.commands.get_channel(idx)
@@ -136,35 +136,46 @@ class MeshCoreInterface(Interface):
             RNS.log(f"[{self.name}] Failed to claim configured channel {idx}", RNS.LOG_DEBUG)
             return None
         
-        # Auto-search: try channels 0-15, prefer higher indices to avoid common channels
-        for idx in reversed(range(16)):  # 15, 14, 13, ... 0
+        # Auto-search: try channels 0-39, prefer higher indices to avoid common channels
+        for idx in reversed(range(RNS_CHANNEL_MAX + 1)):  # 39, 38, 37, ... 0
             try:
                 result = await self.mesh.commands.get_channel(idx)
                 
                 if result.type == self._event_type_cls.CHANNEL_INFO:
                     payload = result.payload
+                    name = payload.get("channel_name", "")
+                    secret = payload.get("channel_secret", b"")
+                    
                     # Check if already configured for us
-                    if (payload.get("channel_name") == self.channel_name and 
-                        payload.get("channel_secret") == self.channel_secret):
+                    if name == self.channel_name and secret == self.channel_secret:
                         RNS.log(f"[{self.name}] Found our channel {idx}", RNS.LOG_INFO)
                         return idx
-                    # Channel exists with different config - skip, don't overwrite others
-                    RNS.log(f"[{self.name}] Channel {idx} occupied by other config, skipping", RNS.LOG_DEBUG)
+                    
+                    # Check if channel is free (empty name + zero secret)
+                    if name == "" and secret == bytes(16):
+                        # Try to claim it
+                        set_result = await self.mesh.commands.set_channel(idx, self.channel_name, self.channel_secret)
+                        if set_result.type == self._event_type_cls.OK:
+                            RNS.log(f"[{self.name}] Claimed free channel {idx}", RNS.LOG_INFO)
+                            return idx
+                        RNS.log(f"[{self.name}] Failed to claim free channel {idx}", RNS.LOG_DEBUG)
+                    else:
+                        # Channel occupied by other config - skip
+                        RNS.log(f"[{self.name}] Channel {idx} occupied, skipping", RNS.LOG_DEBUG)
                     continue
                 
-                # Channel doesn't exist or error - try to claim it
+                # Error response - try to claim anyway
                 set_result = await self.mesh.commands.set_channel(idx, self.channel_name, self.channel_secret)
                 if set_result.type == self._event_type_cls.OK:
-                    RNS.log(f"[{self.name}] Claimed free channel {idx}", RNS.LOG_INFO)
+                    RNS.log(f"[{self.name}] Claimed channel {idx}", RNS.LOG_INFO)
                     return idx
-                RNS.log(f"[{self.name}] Failed to claim channel {idx}: {set_result.payload}", RNS.LOG_DEBUG)
-                
+                    
             except Exception as e:
                 RNS.log(f"[{self.name}] Error checking channel {idx}: {e}", RNS.LOG_DEBUG)
                 continue
         
         # No free channel found
-        RNS.log(f"[{self.name}] No free channel found (0-15)", RNS.LOG_WARNING)
+        RNS.log(f"[{self.name}] No free channel found (0-{RNS_CHANNEL_MAX})", RNS.LOG_WARNING)
         return None
 
     async def _ensure_channel(self):
@@ -399,6 +410,7 @@ class MeshCoreInterface(Interface):
             
             if result.type == self._event_type_cls.ERROR:
                 RNS.log(f"[{self.name}] TX channel error: {result.payload}", RNS.LOG_DEBUG)
+            #RNS.log(f"[{self.name}] TX result.type: {result.type}", RNS.LOG_DEBUG)
                 
         except Exception as e:
             RNS.log(f"[{self.name}] TX failed: {e}\n{traceback.format_exc()}", RNS.LOG_ERROR)
