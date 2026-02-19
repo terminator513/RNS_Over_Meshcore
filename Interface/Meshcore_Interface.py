@@ -65,7 +65,7 @@ class MeshCoreInterface(Interface):
         
         # Interface params
         self.HW_MTU = 564
-        self.bitrate = int(ifconf.get("bitrate", 500))
+        self.bitrate = int(ifconf.get("bitrate", 2000))
         # 🔑 Задержка между фрагментами в секундах (по умолчанию 0.1 = 100 мс)
         self.fragment_delay = float(ifconf.get("fragment_delay", 0))
         
