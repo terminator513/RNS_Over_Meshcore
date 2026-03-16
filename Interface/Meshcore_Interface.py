@@ -63,7 +63,7 @@ class MeshCoreInterface(Interface):
         self.host = ifconf.get("host", "127.0.0.1")
         self.tcp_port = int(ifconf.get("tcp_port", 4403))
         self.ble_name = ifconf.get("ble_name", None)
-        self.count_repeat = ifconf.get("count_repeat", 6)
+        self.count_repeat = ifconf.get("count_repeat", 1)
         
         # Interface params
         self.HW_MTU = 564
